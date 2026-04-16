@@ -1,0 +1,150 @@
+# Node.js File Type TLDR
+
+---
+
+## `server.js`
+**What it is:** Entry point. Starts the server, nothing else.
+**Rules:** Import `config/env.js` first. Never put routes or logic here. Handle `SIGTERM` for graceful shutdown.
+```js
+import './config/env.js';      // must be first
+import app from './app.js';
+const server = app.listen(process.env.PORT || 3000);
+process.on('SIGTERM', () => server.close(() => process.exit(0)));
+```
+
+---
+
+## `app.js`
+**What it is:** Express configuration. Wires together middleware, routes, and the error handler.
+**Rules:** Never call `listen()` here. Order matters: security → parsing → logging → routes → 404 → error handler.
+```js
+const app = express();
+app.use(helmet());
+app.use(cors({ origin: process.env.ALLOWED_ORIGINS?.split(',') }));
+app.use(express.json({ limit: '10kb' }));
+app.use('/api/accounts', accountsRouter);
+app.use(errorHandler);         // always last
+export default app;
+```
+
+---
+
+## `routes/`
+**What it is:** Maps URLs to controller functions. Pure wiring, zero logic.
+**Rules:** One file per resource. Apply shared middleware at the router level, not per-route.
+```js
+const router = Router();
+router.use(requireAuth);                             // applies to all routes below
+router.get('/:id', getAccount);
+router.post('/transfer', requireIdempotencyKey, createTransfer);
+export default router;
+```
+
+---
+
+## `controllers/`
+**What it is:** Handles HTTP — reads `req`, calls a service, writes `res`.
+**Rules:** No business logic. No DB queries. Always `try/catch` and call `next(err)` on failure.
+```js
+export async function getAccount(req, res, next) {
+  try {
+    const account = await AccountService.findById(req.params.id, req.user.id);
+    res.json(account);
+  } catch (err) { next(err); }
+}
+```
+
+---
+
+## `services/`
+**What it is:** Business logic. The most important layer — where rules live and where most tests go.
+**Rules:** No `req`/`res` — ever. DB transactions belong here. Throw typed errors, let the controller catch them.
+```js
+export async function processTransfer({ fromId, toId, amountCents }) {
+  if (amountCents <= 0) throw new ConflictError('Amount must be positive');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    // debit + credit queries
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally { client.release(); }
+}
+```
+
+---
+
+## `middleware/`
+**What it is:** Functions that run before controllers — auth, validation, logging, error handling.
+**Rules:** One concern per file. Call `next()` to continue or send a response to stop. Error handler needs 4 params `(err, req, res, next)` and must be last in `app.js`.
+
+| File | Job |
+|---|---|
+| `auth.js` | Verify JWT, attach `req.user` |
+| `requireRole.js` | Check `req.user.role` |
+| `validate.js` | Run Zod schema, return 400 on failure |
+| `requestLogger.js` | Log method, URL, status, duration |
+| `errorHandler.js` | Catch all errors, return clean JSON |
+
+---
+
+## `config/env.js`
+**What it is:** Loads `.env` files and validates required variables exist. Throws at startup if anything is missing.
+**Rules:** First import in `server.js`. Always validate — fail fast, not mid-request in production.
+```js
+import dotenv from 'dotenv';
+dotenv.config();
+dotenv.config({ path: `.env.${process.env.NODE_ENV}`, override: true });
+const missing = ['DATABASE_URL', 'JWT_SECRET', 'ENCRYPTION_KEY']
+  .filter(k => !process.env[k]);
+if (missing.length) throw new Error(`Missing env vars: ${missing.join(', ')}`);
+```
+
+---
+
+## `config/db.js`
+**What it is:** Creates and exports a single shared Postgres connection pool.
+**Rules:** One pool for the whole app — never create multiple. Never put queries here. Always `release()` clients in a `finally` block.
+```js
+export const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: true } : false,
+  max: 20,
+});
+```
+
+---
+
+## `config/logger.js`
+**What it is:** Creates and exports a single Pino logger. Human-readable in dev, structured JSON in production, silent in tests.
+**Rules:** Never use `console.log` in app code. Always log structured objects, not interpolated strings. Never log sensitive data.
+```js
+export const logger = pino({
+  enabled: process.env.NODE_ENV !== 'test',
+  level: process.env.LOG_LEVEL || 'info',
+  redact: ['*.password', '*.ssn', '*.cardNumber', 'req.headers.authorization'],
+  transport: process.env.NODE_ENV === 'production' ? undefined : { target: 'pino-pretty' },
+});
+
+// Use like this:
+logger.info({ userId, action: 'transfer' }, 'Transfer initiated');  // good
+logger.info(`User ${userId} transferred`);                           // bad
+```
+
+---
+
+## How it all fits together
+
+```
+server.js → app.js → routes/ → controllers/ → services/ → config/db.js
+                ↑
+          middleware/
+          config/env.js (first)
+          config/logger.js
+          config/db.js
+```
+
+Data flows one way: **routes → controllers → services → database.**
+Nothing in `services/` knows about HTTP. Nothing in `routes/` touches the database.
