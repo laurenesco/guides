@@ -12,7 +12,7 @@
  
 ## 1. Mental Model — The Biggest Conceptual Shift
  
-| | LAMP + Perl CGI | Node.js |
+| | CGI | Node.js |
 |---|---|---|
 | **Concurrency model** | Apache spawns a new process per request | One long-lived process handles all requests |
 | **Execution model** | Script runs top-to-bottom, then exits | Single JS thread with an event loop |
@@ -21,25 +21,12 @@
 | **Concurrency** | More processes/threads | Async callbacks/promises on one thread |
 | **Worker threads** | N/A | Exist but rarely needed |
  
-> ⚠️ **The event loop is sacred.** If your code blocks for 200ms (CPU-heavy work, synchronous file reads, tight loops), every other request waits. This is the #1 gotcha coming from CGI.
+>[!IMPORTANT]
+> **The event loop is sacred.** If your code blocks for 200ms (CPU-heavy work, synchronous file reads, tight loops), every other request waits. This is the #1 gotcha coming from CGI.
  
 ### How the Event Loop Works (Simplified)
  
-Node has one JS thread. I/O (DB queries, HTTP calls, file reads) is handed off to the OS asynchronously. When the OS is done, a callback is queued. The event loop picks up callbacks between requests. This is why `async/await` exists — it lets you write sequential-looking code that actually yields control while waiting.
- 
-### CommonJS vs ES Modules
- 
-You'll see two module systems. CommonJS (`require()`) is the legacy default. ES Modules (`import/export`) is the modern standard. For new projects, use ES Modules — add `"type": "module"` to `package.json`.
- 
-```js
-// CommonJS (older)
-const express = require('express');
-module.exports = { handler };
- 
-// ES Modules (modern — prefer this)
-import express from 'express';
-export { handler };
-```
+Node has one JS thread. I/O (DB queries, HTTP calls, file reads) is handed off to the OS asynchronously. When the OS is done, a callback is queued. The event loop picks up callbacks between requests. This is why `async/await` exists, it lets you write sequential-looking code that actually yields control while waiting.
  
 ---
  
@@ -48,9 +35,9 @@ export { handler };
 ### Recommended Folder Structure
  
 ```
-my-fintech-api/
+app_dir/
 ├── src/
-│   ├── routes/          # Express routers — one file per resource
+│   ├── routes/          # Express routers, one file per resource
 │   │   ├── accounts.js
 │   │   └── transactions.js
 │   ├── controllers/     # Request/response handling logic
@@ -59,8 +46,8 @@ my-fintech-api/
 │   ├── middleware/      # Auth, validation, error handling
 │   ├── config/          # DB config, env vars, constants
 │   └── app.js           # Express app setup (no listen() here)
-├── server.js            # Entry point — calls app.listen()
-├── .env                 # Secrets — NEVER commit this
+├── server.js            # Entry point, calls app.listen()
+├── .env                 # Secrets 
 └── package.json
 ```
  
@@ -80,37 +67,9 @@ Incoming HTTP request
  
 Each layer has a single responsibility.
  
-```js
-// routes/accounts.js
-import { Router } from 'express';
-import { getAccount } from '../controllers/accounts.js';
-import { requireAuth } from '../middleware/auth.js';
- 
-const router = Router();
-router.get('/:id', requireAuth, getAccount);
-export default router;
- 
-// controllers/accounts.js
-export async function getAccount(req, res, next) {
-  try {
-    const account = await AccountService.findById(req.params.id);
-    res.json(account);
-  } catch (err) { next(err); }
-}
-```
- 
 ### Environment Variables
  
-Use the `dotenv` package. Never hardcode secrets. Always validate env vars at startup so the server fails fast rather than failing in production mid-request.
- 
-```js
-// config/env.js — validate at startup
-import 'dotenv/config';
-const required = ['DATABASE_URL', 'JWT_SECRET', 'ENCRYPTION_KEY'];
-for (const key of required) {
-  if (!process.env[key]) throw new Error(`Missing env var: ${key}`);
-}
-```
+Use the `dotenv` package. Never hardcode secrets. Always validate env vars at startup so the server fails fast rather than failing in production mid-request. See config/env.js for an example.
  
 ---
  
@@ -127,7 +86,7 @@ db.query(sql, (err, rows) => {
   doSomething(rows);
 });
  
-// Modern async/await (use this)
+// Modern async/await 
 async function getTransactions(accountId) {
   const rows = await db.query(
     'SELECT * FROM transactions WHERE account_id = $1',
@@ -155,7 +114,7 @@ const [account, profile] = await Promise.all([
  
 ### Never Block the Event Loop
  
-> 🚫 These block ALL requests — avoid in request handlers: `fs.readFileSync`, `crypto.pbkdf2Sync`, JSON parsing of huge payloads, tight CPU loops, `child_process.execSync`.
+> These block ALL requests, so avoid in request handlers: `fs.readFileSync`, `crypto.pbkdf2Sync`, JSON parsing of huge payloads, tight CPU loops, `child_process.execSync`.
  
 ```js
 // Bad — blocks event loop
@@ -214,7 +173,7 @@ app.use('/api/accounts', requireAuth, accountsRouter);
  
 ### Input Validation with Zod
  
-Never trust request data. Validate and type-check every incoming body, query, and param. Zod is the current best-in-class library for this.
+Never trust request data. Validate and type check every incoming body, query, and param. Zod is the current best in class library for this.
  
 ```js
 import { z } from 'zod';
@@ -249,7 +208,7 @@ export function errorHandler(err, req, res, next) {
   });
 }
  
-// app.js — must be LAST
+// app.js, must be LAST
 app.use(errorHandler);
 ```
  
@@ -288,7 +247,8 @@ const authLimiter = rateLimit({
 app.use('/api/auth', authLimiter);
 ```
  
-> 🚫 **Never log sensitive data:** passwords, full card numbers, SSNs, API keys, JWT tokens. Log request IDs for correlation, not PII. This is both a security requirement and often a regulatory one (PCI-DSS, SOC 2).
+>[!CRITICAL]
+>**Never log sensitive data:** passwords, full card numbers, SSNs, API keys, JWT tokens. Log request IDs for correlation, not PII. This is both a security requirement and often a regulatory one (PCI-DSS, SOC 2).
  
 ---
  
@@ -296,7 +256,8 @@ app.use('/api/auth', authLimiter);
  
 ### Never Use Floating Point for Money
  
-> 🚫 `0.1 + 0.2 === 0.30000000000000004` in JavaScript. This is catastrophic for financial calculations.
+>[!CRITICAL]
+> `0.1 + 0.2 === 0.30000000000000004` in JavaScript. This is catastrophic for financial calculations.
  
 Store all monetary values as integers (cents/minor currency units) in the database. Use a library like `dinero.js` or `decimal.js` for arithmetic.
  
@@ -380,17 +341,17 @@ await db.query(
  
 ## 7. Recommended Stack & Tooling
  
-| Category | Recommended | Alternatives |
+| Category | Recommended | 
 |---|---|---|
-| **Framework** | Express.js | Fastify, Hono |
-| **Database** | PostgreSQL + `pg` / `postgres.js` | Prisma ORM, Drizzle ORM |
-| **Validation** | Zod | Joi |
-| **Auth** | `jsonwebtoken`, `bcrypt` / `argon2` | Passport.js |
-| **Logging** | `pino` (structured JSON) | Winston |
-| **Testing** | Vitest + Supertest | Jest |
-| **Money** | `dinero.js` | `decimal.js` |
-| **Security** | `helmet`, `express-rate-limit`, `cors` | — |
-| **Process mgmt** | PM2 (production), nodemon (dev) | — |
+| **Framework** | Express.js |
+| **Database** | PostgreSQL + `pg` / `postgres.js` | 
+| **Validation** | Zod | 
+| **Auth** | `jsonwebtoken`, `bcrypt` / `argon2` | 
+| **Logging** | `pino` (structured JSON) | 
+| **Testing** | Vitest + Supertest |
+| **Money** | `dinero.js` | 
+| **Security** | `helmet`, `express-rate-limit`, `cors` |
+| **Process mgmt** | PM2 (production), nodemon (dev) | 
  
 ### Essential `package.json` Scripts
  
@@ -406,27 +367,3 @@ await db.query(
   }
 }
 ```
- 
-### Structured Logging with Pino
- 
-In production, logs should be machine-readable JSON, not pretty console strings. This feeds into log aggregation systems (Datadog, CloudWatch, etc.).
- 
-```js
-import pino from 'pino';
-export const logger = pino({
-  level: process.env.LOG_LEVEL || 'info',
-  redact: ['req.headers.authorization', '*.password', '*.ssn']
-});
- 
-// Use structured fields, not string interpolation
-logger.info({ userId: req.user.id, action: 'transfer', amount: 100 }, 'Transfer initiated');
-// Not: logger.info(`User ${userId} transferred $100`);
-```
- 
-> ✅ **Quick start:** Run `npm init -y`, then install `express`, `zod`, `helmet`, `cors`, `express-rate-limit`, `pino`, `dotenv`, and `pg`. That's enough to build a production-quality financial API skeleton.
- 
----
- 
-*Guide covers Node.js fundamentals for experienced web developers migrating from LAMP/Perl CGI to a Node.js financial backend.*
- 
-
